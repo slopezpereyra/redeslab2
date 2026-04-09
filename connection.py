@@ -140,6 +140,46 @@ class Connection:
             self.send_response(CODE_OK, payload)
 
         elif cmd == "get_slice":
-            # ETAPA B nos pide una respuesta provisoria,
-            # meto mensaje random de que está todo okay.
-            self.send_response(CODE_OK, f"Todo bien en get slice!{EOL}")
+            # Esperamos entre 4 y 5 argumentos: get_slice FILENAME OFFSET SIZE [raw]
+            if len(args) < 4 or len(args) > 5:
+                self.send_response(INVALID_ARGUMENTS)
+                return
+
+            filename = args[1]
+            filepath = os.path.join(self.directory, filename)
+
+            # Capaz deberíamos validar los argumentos acá? e.g. qué pasa si
+            # no son números? Tirar invalid arguments? Porque por el momento
+            # esto va a ser un hard-fail en ese caso
+            offset = int(args[2])
+            size = int(args[3])
+
+            if not os.path.exists(filepath):
+                self.send_response(FILE_NOT_FOUND)
+                return
+
+            file_size = os.path.getsize(filepath)
+
+            # la validacion obvia
+            if offset < 0 or size < 0 or (offset + size) > file_size:
+                self.send_response(BAD_OFFSET)
+                return
+
+            with open(filepath, "rb") as f: # rb -> en binario
+                f.seek(offset)
+                data = f.read(size)
+
+            # NO SE PASA `raw` así que devolvemos el slice codificado en base64.
+            if len(args) == 4:
+                encoded_data = b64encode(data).decode("ascii")
+                payload = f"{encoded_data}{EOL}"
+                self.send_response(CODE_OK, payload)
+            
+            # Dejamos preparado el esqueleto para la Etapa D (raw)
+            elif len(args) == 5:
+                if args[4] == "raw":
+                    self.send_response(CODE_OK, f"Me pediste raw y no sé qué hacer!{EOL}")
+                else:
+                    self.send_response(INVALID_ARGUMENTS)
+
+

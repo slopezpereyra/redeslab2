@@ -47,7 +47,7 @@ class Server:
         y se espera a que concluya antes de seguir.
         """
         while True:
-            # dos notitas: (a) accept es bloqueante; (b) devuelve una tupla, 
+            # dos notitas: (a) accept es bloqueante; (b) devuelve una tupla,
             # el nuevo socket para hablar con el cliente y la dirección del
             # cliente.
             client_socket, client_address = self.server_socket.accept()
