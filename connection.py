@@ -95,6 +95,11 @@ class Connection:
             self.send_response(INVALID_COMMAND)
             return
 
+        # TODO-list (Etapa E - Errores y robustez):
+        # 1. Validación de rutas seguras: Asegurarse de que el argumento FILENAME no contenga caracteres inválidos ni secuencias de escape (ej. '../') para evitar vulnerabilidades de Path Traversal. Puedes apoyarte del set de caracteres válidos (`VALID_CHARS`) importado de `constants.py`. Ante una ruta maliciosa o caracteres incorrectos, devolver INVALID_ARGUMENTS.
+        # 2. Tipado de argumentos: Envolver las conversiones enteras como `int(args[2])` en el comando `get_slice` en bloques `try...except ValueError`. Si fallan debido a letras, devolver código INVALID_ARGUMENTS.
+        # 3. Errores del sistema de archivos: Envolver en `try...except OSError` la llamada a `os.listdir()` y cualquier apertura de archivo (`open`). Si el archivo no tiene permisos de lectura, devolver el código INTERNAL_ERROR (199).
+        
         if cmd == "quit":
             if len(args) != 1:
                 self.send_response(INVALID_ARGUMENTS)
@@ -160,14 +165,18 @@ class Connection:
 
             file_size = os.path.getsize(filepath)
 
-            # la validacion obvia
-            if offset < 0 or size < 0 or (offset + size) > file_size:
-                self.send_response(BAD_OFFSET)
+            if len(args) < 4 or len(args) > 5:
+                self.send_response(INVALID_ARGUMENTS)
                 return
 
-            with open(filepath, "rb") as f: # rb -> en binario
-                f.seek(offset)
-                data = f.read(size)
+            # la validacion obvia - Ro: Aqui ademas vemos que el offset y size sean validos antes de leer el archivo
+            if offset < 0 or size < 0 or (offset + size) > file_size:
+                self.send_response(INVALID_ARGUMENTS)
+                return
+            else:
+                with open(filepath, "rb") as f: # rb -> en binario
+                    f.seek(offset)
+                    data = f.read(size)
 
             # NO SE PASA `raw` así que devolvemos el slice codificado en base64.
             if len(args) == 4:
@@ -176,9 +185,21 @@ class Connection:
                 self.send_response(CODE_OK, payload)
             
             # Dejamos preparado el esqueleto para la Etapa D (raw)
+            # TODO-list (Etapa D):
+            # 1. Verificar si el 4to argumento coincide exactamente con la cadena "raw".
+            # 2. Si es distinto de "raw" (ej. "rawx"), responder con un código de error (por ejemplo, INVALID_ARGUMENTS).
+            # 3. Si es "raw", no enviar este string "Me pediste raw...". Responder primero con "0 OK\r\n".
+            # 4. Enviar la cabecera: "Content-Length: <SIZE>\r\n" seguida de una línea vacía ("\r\n").
+            # 5. Enviar los <SIZE> bytes crudos leídos del archivo directamente a traves del socket (no usar base64 ni appendear EOL a los datos binarios).
+            
+            
             elif len(args) == 5:
                 if args[4] == "raw":
-                    self.send_response(CODE_OK, f"Me pediste raw y no sé qué hacer!{EOL}")
+                    self.send_response(CODE_OK)
+                    content_length_header = f"{CONTENT_LENGTH_PREFIX}{size}{EOL}"
+                    self.socket.sendall(content_length_header.encode("ascii"))
+                    self.socket.sendall(EOL.encode("ascii"))  # Línea vacía
+                    self.socket.sendall(data)
                 else:
                     self.send_response(INVALID_ARGUMENTS)
 

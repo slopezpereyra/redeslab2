@@ -51,6 +51,13 @@ class Server:
             # el nuevo socket para hablar con el cliente y la dirección del
             # cliente.
             client_socket, client_address = self.server_socket.accept()
+            
+            # TODO-list (Etapa F - Varios clientes/Hilos):
+            # 1. Incluir la librería `threading` (o análoga) al comienzo del archivo.
+            # 2. Modificar la atención paralela del socket: En lugar de bloquear el ciclo principal (loop del accept) llamando sincrónicamente a `conn.handle()`, delegar esta tarea.
+            # 3. Crear (`threading.Thread`) y lanzar un subhilo individual por cada cliente conectado en donde la función objetivo (target) se encargue de `conn.handle()`.
+            # 4. Ejecutar `.start()` sobre ese subhilo recién creado. Así, este hilo primario volverá instantáneamente al estado de bloqueo `accept()` para estar listo al recibir el siguiente intento de conexión sin esperas.
+
             conn = connection.Connection(client_socket, self.directory)
             conn.handle()
 
@@ -77,6 +84,12 @@ def main() -> None:
     )
     args = parser.parse_args()
     try:
+
+        # TODO-list (Etapa G - Cierre y Red Tor):
+        # 1. No se requiere código en backend para Tor por sí mismo, pero debes levantar el proxy SOCKS/Servicio Oculto mediante el archivo de reglas `torrc`, guiándote con el archivo `Guia_HFTP_Tor.md`.
+        # 2. Prueba ejecutando el comando sin filtros: `python3 server-test.py` (debería pasar toda tu suite). 
+        # 3. Comprueba tus métricas de entregas y código base sin errores ejecutando simplemente: `python3 grade.py` y verificando que apruebes el mínimo de cobertura y el validador ruff.
+
         server = Server(args.address, args.port, args.datadir)
         server.serve()
     except OSError as e:
