@@ -19,6 +19,7 @@ from constants import (
     INTERNAL_ERROR,
     INVALID_ARGUMENTS,
     INVALID_COMMAND,
+    VALID_CHARS,
     error_messages,
     fatal_status,
 )
@@ -46,33 +47,54 @@ class Connection:
         response = f"{code} {error_messages[code]}{EOL}{payload}"
         self.socket.sendall(response.encode("ascii"))
 
+    def is_valid_filename(self, filename: str) -> bool:
+        if not filename:
+            return False
+        if "/" in filename or "\\" in filename:
+            return False
+        if ".." in filename:
+            return False
+        return all(ch in VALID_CHARS for ch in filename)
+
     def handle(self) -> None:
         """
         Atiende eventos de la conexión hasta que termina.
         """
-        while self.connected:
-            while EOL not in self.buffer and self.connected:
-                # recv() puede devolver datos parciales, los acumulamos
-                data = self.socket.recv(4096).decode("ascii")
-                if not data:
-                    # Si recv devuelve vacío, el cliente cerró la conexión
+        try:
+            while self.connected:
+                while EOL not in self.buffer and self.connected:
+                    # recv() puede devolver datos parciales, los acumulamos
+                    data = self.socket.recv(4096).decode("ascii")
+                    if not data:
+                        # Si recv devuelve vacío, el cliente cerró la conexión
+                        self.connected = False
+                        break
+                    self.buffer += data
+                    if "\n" in self.buffer and EOL not in self.buffer:
+                        # Hay un \n suelto sin \r en el buffer: error fatal 100
+                        self.send_response(BAD_EOL)
+                        self.connected = False
+                        break
+
+                if not self.connected:
+                    break
+
+                # split(EOL, 1) corta en el primer \r\n que encuentra
+                line, self.buffer = self.buffer.split(EOL, 1)
+
+                if '\n' in line:
+                    # Hay un \n suelto sin \r, esto es un error 100
+                    self.send_response(BAD_EOL)
                     self.connected = False
                     break
-                self.buffer += data
 
-            if not self.connected:
-                break
-
-            # split(EOL, 1) corta en el primer \r\n que encuentra
-            line, self.buffer = self.buffer.split(EOL, 1)
-
-            if '\n' in line:
-                # Hay un \n suelto sin \r, esto es un error 100
-                self.send_response(BAD_EOL)
-                self.connected = False
-                break
-
-            self.process_command(line)
+                self.process_command(line)
+        finally:
+            try:
+                self.socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            self.socket.close()
 
 
     def process_command(self, line: str) -> None:
@@ -123,8 +145,12 @@ class Connection:
                 return
             payload = ""
             # usamos os.listdir para leer el directory
-            for f in os.listdir(self.directory):
-                payload += f + EOL
+            try:
+                for f in os.listdir(self.directory):
+                    payload += f + EOL
+            except OSError:
+                self.send_response(INTERNAL_ERROR)
+                return
             payload += EOL
             self.send_response(CODE_OK, payload)
 
@@ -134,15 +160,21 @@ class Connection:
                 return
             
             filename = args[1]
+            if not self.is_valid_filename(filename):
+                self.send_response(INVALID_ARGUMENTS)
+                return
             filepath = os.path.join(self.directory, filename)
-            
-            if not os.path.exists(filepath):
+
+            try:
+                size = os.path.getsize(filepath)
+            except PermissionError:
+                self.send_response(INTERNAL_ERROR)
+                return
+            except OSError:
                 self.send_response(FILE_NOT_FOUND)
                 return
-            
-            size = os.path.getsize(filepath)
-            payload = f"{size}{EOL}"
-            self.send_response(CODE_OK, payload)
+
+            self.send_response(CODE_OK, f"{size}{EOL}")
 
         elif cmd == "get_slice":
             # Esperamos entre 4 y 5 argumentos: get_slice FILENAME OFFSET SIZE [raw]
@@ -151,32 +183,45 @@ class Connection:
                 return
 
             filename = args[1]
+            if not self.is_valid_filename(filename):
+                self.send_response(INVALID_ARGUMENTS)
+                return
             filepath = os.path.join(self.directory, filename)
 
-            # Capaz deberíamos validar los argumentos acá? e.g. qué pasa si
-            # no son números? Tirar invalid arguments? Porque por el momento
-            # esto va a ser un hard-fail en ese caso
-            offset = int(args[2])
-            size = int(args[3])
+            try:
+                offset = int(args[2])
+                size = int(args[3])
+            except ValueError:
+                self.send_response(INVALID_ARGUMENTS)
+                return
 
-            if not os.path.exists(filepath):
+            if offset < 0 or size < 0:
+                self.send_response(INVALID_ARGUMENTS)
+                return
+
+            try:
+                file_size = os.path.getsize(filepath)
+            except PermissionError:
+                self.send_response(INTERNAL_ERROR)
+                return
+            except OSError:
                 self.send_response(FILE_NOT_FOUND)
                 return
 
-            file_size = os.path.getsize(filepath)
-
-            if len(args) < 4 or len(args) > 5:
-                self.send_response(INVALID_ARGUMENTS)
+            if (offset + size) > file_size:
+                self.send_response(BAD_OFFSET)
                 return
 
-            # la validacion obvia - Ro: Aqui ademas vemos que el offset y size sean validos antes de leer el archivo
-            if offset < 0 or size < 0 or (offset + size) > file_size:
-                self.send_response(INVALID_ARGUMENTS)
-                return
-            else:
-                with open(filepath, "rb") as f: # rb -> en binario
+            try:
+                with open(filepath, "rb") as f:  # rb -> en binario
                     f.seek(offset)
                     data = f.read(size)
+            except PermissionError:
+                self.send_response(INTERNAL_ERROR)
+                return
+            except OSError:
+                self.send_response(FILE_NOT_FOUND)
+                return
 
             # NO SE PASA `raw` así que devolvemos el slice codificado en base64.
             if len(args) == 4:
