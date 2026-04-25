@@ -95,7 +95,61 @@ class Connection:
             except OSError:
                 pass
             self.socket.close()
+    #parte F que no rompa nada        
+    def handle_get_slice(self, args: list[str]) -> None:
+        """
+        Parte F: Envío de fragmentos de archivos.
+        Uso: get_slice <filename> <offset> <size> [mode]
+        """
+        # Validamos cantidad de argumentos 
+        if len(args) < 3 or len(args) > 4:
+            self.send_response(INVALID_ARGUMENTS)
+            return
 
+        try:
+            filename = args[0]
+            filepath = os.path.join(self.directory, filename)
+            offset = int(args[1])
+            size = int(args[2])
+            # Si no hay 4to argumento, por base64
+            mode = args[3] if len(args) == 4 else 'base64'
+
+            # Verificamos si el archivo existe
+            if not os.path.isfile(filepath):
+                self.send_response(FILE_NOT_FOUND)
+                return
+
+            file_size = os.path.getsize(filepath)
+            # Validamos que el offset y size no se pasen del archivo
+            if offset < 0 or size < 0 or (offset + size) > file_size:
+                self.send_response(BAD_OFFSET)
+                return
+
+            # Leemos los bytes solicitados
+            with open(filepath, "rb") as f:
+                f.seek(offset)
+                data = f.read(size)
+
+            if mode == 'base64':
+                self.send_response(CODE_OK)
+                encoded = b64encode(data)
+                # En base64 mandamos los datos + el EOL del protocolo
+                self.socket.sendall(encoded + EOL.encode("ascii"))
+            
+            elif mode == 'raw':
+                self.send_response(CODE_OK)
+                # Framing para RAW: header + linea vacia + Bytes
+                header = f"{CONTENT_LENGTH_PREFIX} {len(data)}{EOL}{EOL}"
+                self.socket.sendall(header.encode("ascii") + data)
+            
+            else:
+                #intentamos solucionar 203 /= 201
+                self.send_response(INVALID_ARGUMENTS)
+
+        except (ValueError, IndexError):
+            self.send_response(INVALID_ARGUMENTS)
+        except Exception:
+            self.send_response(INTERNAL_ERROR)
 
     def process_command(self, line: str) -> None:
         """
@@ -241,11 +295,12 @@ class Connection:
             elif len(args) == 5:
                 if args[4] == "raw":
                     self.send_response(CODE_OK)
-                    content_length_header = f"{CONTENT_LENGTH_PREFIX}{size}{EOL}"
-                    self.socket.sendall(content_length_header.encode("ascii"))
-                    self.socket.sendall(EOL.encode("ascii"))  # Línea vacía
-                    self.socket.sendall(data)
+                    header = f"{CONTENT_LENGTH_PREFIX} {len(data)}{EOL}{EOL}"
+                    self.socket.sendall(header.encode("ascii") + data)
+                   # self.socket.sendall(EOL.encode("ascii"))  # Línea vacía
+                   # self.socket.sendall(data)
                 else:
                     self.send_response(INVALID_ARGUMENTS)
+                    return
 
 
