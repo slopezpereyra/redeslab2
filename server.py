@@ -11,6 +11,7 @@ import socket
 import sys
 import connection
 from constants import DEFAULT_ADDR, DEFAULT_DIR, DEFAULT_PORT
+import threading 
 
 
 # RICARDO DATIN: En este link se entiende todo:
@@ -59,8 +60,8 @@ class Server:
             # 4. Ejecutar `.start()` sobre ese subhilo recién creado. Así, este hilo primario volverá instantáneamente al estado de bloqueo `accept()` para estar listo al recibir el siguiente intento de conexión sin esperas.
 
             conn = connection.Connection(client_socket, self.directory)
-            conn.handle()
-
+            thread = threading.Thread(target=conn.handle)
+            thread.start()
 
 
 def main() -> None:
