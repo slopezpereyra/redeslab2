@@ -6,6 +6,7 @@
 import socket
 import os 
 from base64 import b64encode
+import pdb
 
 from constants import (
     BAD_EOL,
@@ -260,6 +261,10 @@ class Connection:
                 return
             except OSError:
                 self.send_response(FILE_NOT_FOUND)
+                return
+
+            if (args[4] if len(args) == 5 else 'base64') not in ['base64', 'raw']:
+                self.send_response(INVALID_ARGUMENTS)
                 return
 
             if (offset + size) > file_size:
