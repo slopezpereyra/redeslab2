@@ -4,9 +4,8 @@
 # $Id: connection.py 455 2011-05-01 00:32:09Z carlos $
 
 import socket
-import os 
+import os
 from base64 import b64encode
-import pdb
 
 from constants import (
     BAD_EOL,
@@ -22,7 +21,6 @@ from constants import (
     INVALID_COMMAND,
     VALID_CHARS,
     error_messages,
-    fatal_status,
 )
 
 
@@ -42,7 +40,7 @@ class Connection:
 
     def send_response(self, code: int, payload: str = "") -> None:
         """
-        Función auxiliar para no repetir código. 
+        Función auxiliar para no repetir código.
         Arma la línea de respuesta: <código> <mensaje>\r\n + payload
         """
         response = f"{code} {error_messages[code]}{EOL}{payload}"
@@ -95,14 +93,14 @@ class Connection:
                 self.socket.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
-            self.socket.close()
-    #parte F que no rompa nada        
+                self.socket.close()
+            #parte F que no rompa nada
     def handle_get_slice(self, args: list[str]) -> None:
         """
         Parte F: Envío de fragmentos de archivos.
         Uso: get_slice <filename> <offset> <size> [mode]
         """
-        # Validamos cantidad de argumentos 
+        # Validamos cantidad de argumentos
         if len(args) < 3 or len(args) > 4:
             self.send_response(INVALID_ARGUMENTS)
             return
@@ -136,15 +134,15 @@ class Connection:
                 encoded = b64encode(data)
                 # En base64 mandamos los datos + el EOL del protocolo
                 self.socket.sendall(encoded + EOL.encode("ascii"))
-            
+
             elif mode == 'raw':
                 self.send_response(CODE_OK)
                 # Framing para RAW: header + linea vacia + Bytes
                 header = f"{CONTENT_LENGTH_PREFIX} {len(data)}{EOL}{EOL}"
                 self.socket.sendall(header.encode("ascii") + data)
-            
+
             else:
-                #intentamos solucionar 203 /= 201
+                # intentamos solucionar 203 /= 201
                 self.send_response(INVALID_ARGUMENTS)
 
         except (ValueError, IndexError):
@@ -157,155 +155,134 @@ class Connection:
         Interpreta el comando enviado por el cliente y ejecuta la acción.
         """
         args = line.split()
-        
+
         # Si la línea estaba vacía (mandaron solo \r\n) args queda vacío -> Error 101
         if not args:
             self.send_response(BAD_REQUEST)
             self.connected = False
             return
 
-        # Ahora un parseo al estilo de cuando en SO hicimos parsing para
-        # los cmds de la command line.
         cmd = args[0]
 
         if cmd not in COMMANDS:
             self.send_response(INVALID_COMMAND)
             return
 
-        # TODO-list (Etapa E - Errores y robustez):
-        # 1. Validación de rutas seguras: Asegurarse de que el argumento FILENAME no contenga caracteres inválidos ni secuencias de escape (ej. '../') para evitar vulnerabilidades de Path Traversal. Puedes apoyarte del set de caracteres válidos (`VALID_CHARS`) importado de `constants.py`. Ante una ruta maliciosa o caracteres incorrectos, devolver INVALID_ARGUMENTS.
-        # 2. Tipado de argumentos: Envolver las conversiones enteras como `int(args[2])` en el comando `get_slice` en bloques `try...except ValueError`. Si fallan debido a letras, devolver código INVALID_ARGUMENTS.
-        # 3. Errores del sistema de archivos: Envolver en `try...except OSError` la llamada a `os.listdir()` y cualquier apertura de archivo (`open`). Si el archivo no tiene permisos de lectura, devolver el código INTERNAL_ERROR (199).
-        
+        # Dispatch a handlers reduciendo la complejidad por función.
         if cmd == "quit":
-            if len(args) != 1:
-                self.send_response(INVALID_ARGUMENTS)
-                return
-            self.send_response(CODE_OK)
-            self.connected = False
-
+            self._handle_quit(args)
         elif cmd == "help":
-            if len(args) != 1:
-                self.send_response(INVALID_ARGUMENTS)
-                return
-            payload = ""
-            for command in COMMANDS:
-                payload += command + EOL
-            payload += EOL  # El protocolo pide una línea vacía al final
-            self.send_response(CODE_OK, payload)
-
+            self._handle_help(args)
         elif cmd == "get_file_listing":
-            if len(args) != 1:
-                self.send_response(INVALID_ARGUMENTS)
-                return
-            payload = ""
-            # usamos os.listdir para leer el directory
-            try:
-                for f in os.listdir(self.directory):
-                    payload += f + EOL
-            except OSError:
-                self.send_response(INTERNAL_ERROR)
-                return
-            payload += EOL
-            self.send_response(CODE_OK, payload)
-
+            self._handle_get_file_listing(args)
         elif cmd == "get_metadata":
-            if len(args) != 2:
-                self.send_response(INVALID_ARGUMENTS)
-                return
-            
-            filename = args[1]
-            if not self.is_valid_filename(filename):
-                self.send_response(INVALID_ARGUMENTS)
-                return
-            filepath = os.path.join(self.directory, filename)
-
-            try:
-                size = os.path.getsize(filepath)
-            except PermissionError:
-                self.send_response(INTERNAL_ERROR)
-                return
-            except OSError:
-                self.send_response(FILE_NOT_FOUND)
-                return
-
-            self.send_response(CODE_OK, f"{size}{EOL}")
-
+            self._handle_get_metadata(args)
         elif cmd == "get_slice":
-            # Esperamos entre 4 y 5 argumentos: get_slice FILENAME OFFSET SIZE [raw]
-            if len(args) < 4 or len(args) > 5:
-                self.send_response(INVALID_ARGUMENTS)
-                return
+            self._handle_get_slice(args)
+        else:
+            self.send_response(INVALID_COMMAND)
 
-            filename = args[1]
-            if not self.is_valid_filename(filename):
-                self.send_response(INVALID_ARGUMENTS)
-                return
-            filepath = os.path.join(self.directory, filename)
+    def _handle_quit(self, args: list[str]) -> None:
+        if len(args) != 1:
+            self.send_response(INVALID_ARGUMENTS)
+            return
+        self.send_response(CODE_OK)
+        self.connected = False
 
-            try:
-                offset = int(args[2])
-                size = int(args[3])
-            except ValueError:
-                self.send_response(INVALID_ARGUMENTS)
-                return
+    def _handle_help(self, args: list[str]) -> None:
+        if len(args) != 1:
+            self.send_response(INVALID_ARGUMENTS)
+            return
+        payload = ""
+        for command in COMMANDS:
+            payload += command + EOL
+        payload += EOL
+        self.send_response(CODE_OK, payload)
 
-            if offset < 0 or size < 0:
-                self.send_response(INVALID_ARGUMENTS)
-                return
+    def _handle_get_file_listing(self, args: list[str]) -> None:
+        if len(args) != 1:
+            self.send_response(INVALID_ARGUMENTS)
+            return
+        payload = ""
+        try:
+            for f in os.listdir(self.directory):
+                payload += f + EOL
+        except OSError:
+            self.send_response(INTERNAL_ERROR)
+            return
+        payload += EOL
+        self.send_response(CODE_OK, payload)
 
-            try:
-                file_size = os.path.getsize(filepath)
-            except PermissionError:
-                self.send_response(INTERNAL_ERROR)
-                return
-            except OSError:
-                self.send_response(FILE_NOT_FOUND)
-                return
+    def _handle_get_metadata(self, args: list[str]) -> None:
+        if len(args) != 2:
+            self.send_response(INVALID_ARGUMENTS)
+            return
+        filename = args[1]
+        if not self.is_valid_filename(filename):
+            self.send_response(INVALID_ARGUMENTS)
+            return
+        filepath = os.path.join(self.directory, filename)
+        try:
+            size = os.path.getsize(filepath)
+        except PermissionError:
+            self.send_response(INTERNAL_ERROR)
+            return
+        except OSError:
+            self.send_response(FILE_NOT_FOUND)
+            return
+        self.send_response(CODE_OK, f"{size}{EOL}")
 
-            if (args[4] if len(args) == 5 else 'base64') not in ['base64', 'raw']:
-                self.send_response(INVALID_ARGUMENTS)
-                return
-
-            if (offset + size) > file_size:
-                self.send_response(BAD_OFFSET)
-                return
-
-            try:
-                with open(filepath, "rb") as f:  # rb -> en binario
-                    f.seek(offset)
-                    data = f.read(size)
-            except PermissionError:
-                self.send_response(INTERNAL_ERROR)
-                return
-            except OSError:
-                self.send_response(FILE_NOT_FOUND)
-                return
-
-            # NO SE PASA `raw` así que devolvemos el slice codificado en base64.
-            if len(args) == 4:
-                encoded_data = b64encode(data).decode("ascii")
-                payload = f"{encoded_data}{EOL}"
-                self.send_response(CODE_OK, payload)
-            
-            # Dejamos preparado el esqueleto para la Etapa D (raw)
-            # TODO-list (Etapa D):
-            # 1. Verificar si el 4to argumento coincide exactamente con la cadena "raw".
-            # 2. Si es distinto de "raw" (ej. "rawx"), responder con un código de error (por ejemplo, INVALID_ARGUMENTS).
-            # 3. Si es "raw", no enviar este string "Me pediste raw...". Responder primero con "0 OK\r\n".
-            # 4. Enviar la cabecera: "Content-Length: <SIZE>\r\n" seguida de una línea vacía ("\r\n").
-            # 5. Enviar los <SIZE> bytes crudos leídos del archivo directamente a traves del socket (no usar base64 ni appendear EOL a los datos binarios).
-            
-            
-            elif len(args) == 5:
-                if args[4] == "raw":
-                    self.send_response(CODE_OK)
-                    header = f"{CONTENT_LENGTH_PREFIX} {len(data)}{EOL}{EOL}"
-                    self.socket.sendall(header.encode("ascii") + data)
-                   # self.socket.sendall(EOL.encode("ascii"))  # Línea vacía
-                   # self.socket.sendall(data)
-                else:
-                    self.send_response(INVALID_ARGUMENTS)
-                    return
+    def _handle_get_slice(self, args: list[str]) -> None:
+        if len(args) < 4 or len(args) > 5:
+            self.send_response(INVALID_ARGUMENTS)
+            return
+        filename = args[1]
+        if not self.is_valid_filename(filename):
+            self.send_response(INVALID_ARGUMENTS)
+            return
+        filepath = os.path.join(self.directory, filename)
+        try:
+            offset = int(args[2])
+            size = int(args[3])
+        except ValueError:
+            self.send_response(INVALID_ARGUMENTS)
+            return
+        if offset < 0 or size < 0:
+            self.send_response(INVALID_ARGUMENTS)
+            return
+        try:
+            file_size = os.path.getsize(filepath)
+        except PermissionError:
+            self.send_response(INTERNAL_ERROR)
+            return
+        except OSError:
+            self.send_response(FILE_NOT_FOUND)
+            return
+        mode = args[4] if len(args) == 5 else 'base64'
+        if mode not in ['base64', 'raw']:
+            self.send_response(INVALID_ARGUMENTS)
+            return
+        if (offset + size) > file_size:
+            self.send_response(BAD_OFFSET)
+            return
+        try:
+            with open(filepath, "rb") as f:
+                f.seek(offset)
+                data = f.read(size)
+        except PermissionError:
+            self.send_response(INTERNAL_ERROR)
+            return
+        except OSError:
+            self.send_response(FILE_NOT_FOUND)
+            return
+        if mode == 'base64':
+            encoded_data = b64encode(data).decode("ascii")
+            payload = f"{encoded_data}{EOL}"
+            self.send_response(CODE_OK, payload)
+            return
+        # raw mode
+        self.send_response(CODE_OK)
+        header = f"{CONTENT_LENGTH_PREFIX} {len(data)}{EOL}{EOL}"
+        self.socket.sendall(header.encode("ascii") + data)
 
 

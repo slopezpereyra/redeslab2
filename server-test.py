@@ -17,6 +17,7 @@ import unittest
 
 import client
 import constants
+import connection
 
 DATADIR = "testdata"
 TIMEOUT = 3  # Segundos para esperar respuestas del servidor
@@ -259,6 +260,35 @@ class TestHFTPErrors(TestBase):
         self.assertEqual(status, constants.BAD_EOL,
                          "El servidor no contestó 100 ante un fin de línea erróneo")
 
+    def test_bad_eol_single_lf(self) -> None:
+        """Chequeo: LF sin CR dispara BAD_EOL.
+        Donde: `Connection.handle` (buffer con '\n' sin '\r\n').
+        Enviamos: `quit\n`.
+        Esperamos: `BAD_EOL` (100) y cierre.
+        Por qué: el protocolo exige CRLF exacto.
+        """
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.connect((CONNECT_ADDR, constants.DEFAULT_PORT))
+        except socket.error:
+            self.fail("No se pudo establecer conexión al server")
+        s.sendall(b"quit\n")
+        buf = b""
+        deadline = time.time() + TIMEOUT
+        while b"\r\n" not in buf and time.time() < deadline:
+            r, _, _ = select.select([s], [], [], max(0.01, deadline - time.time()))
+            if r:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+        s.close()
+        self.assertIn(b"\r\n", buf, "No hubo respuesta ante LF suelto")
+        line = buf.split(b"\r\n", 1)[0].decode("ascii")
+        code = int(line.split(None, 1)[0])
+        self.assertEqual(code, constants.BAD_EOL,
+                         "El servidor no contestó 100 ante LF sin CR")
+
     def test_bad_command(self) -> None:
         c = self.new_client()
         c.send('verdura')
@@ -300,6 +330,19 @@ class TestHFTPErrors(TestBase):
                          "muy larga")
         c.close()
 
+    def test_help_with_arguments_is_invalid(self) -> None:
+        """Chequeo: `help` no acepta argumentos.
+        Donde: `Connection._handle_help`.
+        Enviamos: `help extra`.
+        Esperamos: `INVALID_ARGUMENTS` (201).
+        Por qué: el protocolo define `help` sin argumentos.
+        """
+        c = self.new_client()
+        c.send("help extra")
+        status, _ = c.read_response_line(TIMEOUT)
+        self.assertEqual(status, constants.INVALID_ARGUMENTS)
+        c.close()
+
     def test_bad_argument_count_2(self) -> None:
         c = self.new_client()
         c.send('get_metadata')  # Sin argumentos
@@ -307,6 +350,19 @@ class TestHFTPErrors(TestBase):
         self.assertEqual(status, constants.INVALID_ARGUMENTS,
                          "El servidor no contestó 201 ante una lista de argumentos "
                          "muy corta")
+        c.close()
+
+    def test_get_file_listing_with_arguments_is_invalid(self) -> None:
+        """Chequeo: `get_file_listing` no acepta argumentos.
+        Donde: `Connection._handle_get_file_listing`.
+        Enviamos: `get_file_listing extra`.
+        Esperamos: `INVALID_ARGUMENTS` (201).
+        Por qué: el protocolo define `get_file_listing` sin argumentos.
+        """
+        c = self.new_client()
+        c.send("get_file_listing extra")
+        status, _ = c.read_response_line(TIMEOUT)
+        self.assertEqual(status, constants.INVALID_ARGUMENTS)
         c.close()
 
     def test_bad_argument_type(self) -> None:
@@ -318,6 +374,47 @@ class TestHFTPErrors(TestBase):
         self.assertEqual(status, constants.INVALID_ARGUMENTS,
                          "El servidor no contestó 201 ante una lista de argumentos "
                          "mal tipada (status=%d)" % status)
+        c.close()
+
+    def test_invalid_filename_metadata_rejected(self) -> None:
+        """Chequeo: validación de nombres en `get_metadata`.
+        Donde: `Connection._handle_get_metadata`.
+        Enviamos: `get_metadata ../secret`.
+        Esperamos: `INVALID_ARGUMENTS` (201).
+        Por qué: bloquea path traversal.
+        """
+        c = self.new_client()
+        c.send("get_metadata ../secret")
+        status, _ = c.read_response_line(TIMEOUT)
+        self.assertEqual(status, constants.INVALID_ARGUMENTS)
+        c.close()
+
+    def test_invalid_filename_get_slice_rejected(self) -> None:
+        """Chequeo: validación de nombres en `get_slice`.
+        Donde: `Connection._handle_get_slice`.
+        Enviamos: `get_slice ../secret 0 1`.
+        Esperamos: `INVALID_ARGUMENTS` (201).
+        Por qué: bloquea path traversal.
+        """
+        c = self.new_client()
+        c.send("get_slice ../secret 0 1")
+        status, _ = c.read_response_line(TIMEOUT)
+        self.assertEqual(status, constants.INVALID_ARGUMENTS)
+        c.close()
+
+    def test_get_slice_negative_offset_rejected(self) -> None:
+        """Chequeo: offsets negativos no permitidos.
+        Donde: `Connection._handle_get_slice`.
+        Enviamos: `get_slice bar -1 1` sobre archivo existente.
+        Esperamos: `INVALID_ARGUMENTS` (201).
+        Por qué: el protocolo no admite offsets negativos.
+        """
+        with open(os.path.join(DATADIR, "bar"), "w") as f:
+            f.write("x")
+        c = self.new_client()
+        c.send("get_slice bar -1 1")
+        status, _ = c.read_response_line(TIMEOUT)
+        self.assertEqual(status, constants.INVALID_ARGUMENTS)
         c.close()
 
     def test_file_not_found(self) -> None:
@@ -367,6 +464,140 @@ class TestHFTPErrors(TestBase):
             )
         finally:
             os.chmod(path, 0o644)
+
+    def test_get_file_listing_directory_unreadable(self) -> None:
+        """Chequeo: error de lectura del directorio compartido.
+        Donde: `Connection._handle_get_file_listing`.
+        Enviamos: `get_file_listing` con directorio sin permisos.
+        Esperamos: `INTERNAL_ERROR` (199).
+        Por qué: el servidor debe reportar fallas de filesystem.
+        """
+        os.chmod(DATADIR, 0o000)
+        try:
+            c = self.new_client()
+            _ = c.file_lookup()
+            self.assertEqual(c.status, constants.INTERNAL_ERROR)
+            c.close()
+        finally:
+            os.chmod(DATADIR, 0o755)
+
+
+class _FakeSocket:
+    def __init__(self) -> None:
+        self.sent: list[bytes] = []
+
+    def sendall(self, data: bytes) -> None:
+        self.sent.append(data)
+
+
+class TestConnectionUnit(unittest.TestCase):
+    """Tests directos sobre `Connection` para cubrir ramas internas."""
+
+    def setUp(self) -> None:
+        self.tmpdir = os.path.join(DATADIR, "unit")
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        os.makedirs(self.tmpdir, exist_ok=True)
+        self.sock = _FakeSocket()
+        self.conn = connection.Connection(self.sock, self.tmpdir)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_is_valid_filename_rejects_empty(self) -> None:
+        """Chequeo: nombre vacío es inválido.
+        Donde: `Connection.is_valid_filename`.
+        Enviamos: "".
+        Esperamos: False.
+        Por qué: el protocolo exige un filename válido.
+        """
+        self.assertFalse(self.conn.is_valid_filename(""))
+
+    def test_is_valid_filename_rejects_path_separator(self) -> None:
+        """Chequeo: nombre con separador es inválido.
+        Donde: `Connection.is_valid_filename`.
+        Enviamos: "../x".
+        Esperamos: False.
+        Por qué: evita path traversal.
+        """
+        self.assertFalse(self.conn.is_valid_filename("../x"))
+
+    def test_handle_get_slice_invalid_args(self) -> None:
+        """Chequeo: argumentos inválidos en `handle_get_slice`.
+        Donde: `Connection.handle_get_slice`.
+        Enviamos: lista vacía.
+        Esperamos: `INVALID_ARGUMENTS` (201) en la respuesta.
+        Por qué: valida cantidad de argumentos.
+        """
+        self.conn.handle_get_slice([])
+        payload = b"".join(self.sock.sent).decode("ascii")
+        self.assertTrue(payload.startswith("201"))
+
+    def test_handle_get_slice_bad_offset(self) -> None:
+        """Chequeo: offset fuera de rango en `handle_get_slice`.
+        Donde: `Connection.handle_get_slice`.
+        Enviamos: offset+size > size del archivo.
+        Esperamos: `BAD_OFFSET` (203).
+        Por qué: protege límites del archivo.
+        """
+        path = os.path.join(self.tmpdir, "bar")
+        with open(path, "wb") as f:
+            f.write(b"abc")
+        self.sock.sent.clear()
+        self.conn.handle_get_slice(["bar", "0", "10"])
+        payload = b"".join(self.sock.sent).decode("ascii")
+        self.assertTrue(payload.startswith("203"))
+
+    def test_handle_get_slice_full_behavior(self) -> None:
+        """Chequeo: comportamiento completo de `handle_get_slice`.
+        Donde: `Connection.handle_get_slice`.
+        Enviamos: casos base64, raw, modo inválido, archivo inexistente y args inválidos.
+        Esperamos: códigos 0/201/202/203 según corresponda y framing correcto.
+        Por qué: valida todos los caminos principales del envío de slices.
+        """
+        path = os.path.join(self.tmpdir, "data")
+        with open(path, "wb") as f:
+            f.write(b"abcd")
+
+        # base64 OK
+        self.sock.sent.clear()
+        self.conn.handle_get_slice(["data", "1", "2"])
+        first = self.sock.sent[0].decode("ascii")
+        second = self.sock.sent[1]
+        self.assertTrue(first.startswith("0 OK"))
+        self.assertEqual(second, b"YmM=\r\n")
+
+        # raw OK
+        self.sock.sent.clear()
+        self.conn.handle_get_slice(["data", "1", "2", "raw"])
+        first = self.sock.sent[0].decode("ascii")
+        second = self.sock.sent[1]
+        self.assertTrue(first.startswith("0 OK"))
+        self.assertTrue(second.startswith(b"Content-Length: 2\r\n\r\n"))
+        self.assertEqual(second.split(b"\r\n\r\n", 1)[1], b"bc")
+
+        # modo inválido
+        self.sock.sent.clear()
+        self.conn.handle_get_slice(["data", "0", "1", "rawx"])
+        payload = b"".join(self.sock.sent).decode("ascii")
+        self.assertTrue(payload.startswith("201"))
+
+        # archivo inexistente
+        self.sock.sent.clear()
+        self.conn.handle_get_slice(["missing", "0", "1"])
+        payload = b"".join(self.sock.sent).decode("ascii")
+        self.assertTrue(payload.startswith("202"))
+
+        # args inválidos (cantidad)
+        self.sock.sent.clear()
+        self.conn.handle_get_slice(["only_one_arg"])
+        payload = b"".join(self.sock.sent).decode("ascii")
+        self.assertTrue(payload.startswith("201"))
+
+        # args inválidos (tipo)
+        self.sock.sent.clear()
+        self.conn.handle_get_slice(["data", "x", "y"])
+        payload = b"".join(self.sock.sent).decode("ascii")
+        self.assertTrue(payload.startswith("201"))
 
 
 class TestHFTPMultiClient(TestBase):
