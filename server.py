@@ -11,6 +11,7 @@ import socket
 import sys
 import connection
 from constants import DEFAULT_ADDR, DEFAULT_DIR, DEFAULT_PORT
+import threading
 
 
 # RICARDO DATIN: En este link se entiende todo:
@@ -34,8 +35,9 @@ class Server:
         # puerto especificados y lo ponemos a escuchar. El socket se cierra
         # automáticamente al finalizar el programa.
         # Una vez más, revisar: https://docs.python.org/3/howto/sockets.html
-        self.directory = directory 
+        self.directory = directory
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((addr, port))
         self.server_socket.listen()
 
@@ -51,9 +53,15 @@ class Server:
             # el nuevo socket para hablar con el cliente y la dirección del
             # cliente.
             client_socket, client_address = self.server_socket.accept()
-            conn = connection.Connection(client_socket, self.directory)
-            conn.handle()
+            # TODO-list (Etapa F - Varios clientes/Hilos):
+            # 1. Incluir la librería `threading` (o análoga) al comienzo del archivo.
+            # 2. Modificar la atención paralela del socket: En lugar de bloquear el ciclo principal (loop del accept) llamando sincrónicamente a `conn.handle()`, delegar esta tarea.
+            # 3. Crear (`threading.Thread`) y lanzar un subhilo individual por cada cliente conectado en donde la función objetivo (target) se encargue de `conn.handle()`.
+            # 4. Ejecutar `.start()` sobre ese subhilo recién creado. Así, este hilo primario volverá instantáneamente al estado de bloqueo `accept()` para estar listo al recibir el siguiente intento de conexión sin esperas.
 
+            conn = connection.Connection(client_socket, self.directory)
+            thread = threading.Thread(target=conn.handle)
+            thread.start()
 
 
 def main() -> None:
@@ -77,6 +85,12 @@ def main() -> None:
     )
     args = parser.parse_args()
     try:
+
+        # TODO-list (Etapa G - Cierre y Red Tor):
+        # 1. No se requiere código en backend para Tor por sí mismo, pero debes levantar el proxy SOCKS/Servicio Oculto mediante el archivo de reglas `torrc`, guiándote con el archivo `Guia_HFTP_Tor.md`.
+        # 2. Prueba ejecutando el comando sin filtros: `python3 server-test.py` (debería pasar toda tu suite).
+        # 3. Comprueba tus métricas de entregas y código base sin errores ejecutando simplemente: `python3 grade.py` y verificando que apruebes el mínimo de cobertura y el validador ruff.
+
         server = Server(args.address, args.port, args.datadir)
         server.serve()
     except OSError as e:
