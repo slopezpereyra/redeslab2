@@ -93,6 +93,6 @@ for i in {1..10}; do
 done
 
 echo "Tor está corriendo pero el hostname aún no aparece." >&2
-echo "Comprueba permisos: ls -la $HIDDEN_DIR (debe ser propietario el usuario de Tor)" >&2
-echo "Logs de Tor: sudo journalctl -u tor -n 50 --no-pager" >&2
+echo "Comprueba permisos: sudo ls -la $HIDDEN_DIR (debe ser propietario el usuario de Tor)" >&2
+echo "Logs de Tor: sudo journalctl -u $TOR_UNIT -n 50 --no-pager" >&2
 exit 1

@@ -11,7 +11,7 @@ import logging
 import socket
 import sys
 import time
-from base64 import b64decode
+from base64 import b64decode, b64encode
 
 from constants import (
     CODE_OK,
